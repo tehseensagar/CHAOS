@@ -4,7 +4,7 @@
             <div class="panel-heading mb-4">
                 <div class="row pb-2">
                     <div class="col col-xs-2">
-                        <h1 class="h2">File Explorer</h1>
+                        <h1 class="h2">File Explorer ({{ .Device.Hostname }})</h1>
                     </div>
                 </div>
             </div>
@@ -65,6 +65,16 @@
                                 {{ range .Files }}
                                     <div class="file-box">
                                         <div class="file">
+                                            <div class="d-flex justify-content-end">
+                                            <div class="btn-group">
+                                                <button class="btn btn-sm dropdown-toggle" style="background-color:transparent" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                                                </button>
+                                                <div class="dropdown-menu">
+                                                    <a class="dropdown-item" onclick="DeleteFile({{.Filename}})"><i class="fas fa-trash"></i> Delete</a>
+                                                    <a class="dropdown-item" onclick="DownloadFile({{.Filename}})"><i class="fas fa-cloud-download-alt"></i> Download</a>
+                                                </div>
+                                            </div>
+                                            </div>
                                             <a href="#" onclick="DownloadFile({{.Filename}})">
                                                 <span class="corner"></span>
 
@@ -79,7 +89,6 @@
                                                 </div>
                                             </a>
                                         </div>
-
                                     </div>
                                 {{end}}
                             {{end}}
@@ -94,6 +103,7 @@
     <script src="static/js/app/explorer.js"></script>
     <script src="static/js/app/download.js"></script>
     <script src="static/js/app/upload.js"></script>
+    <script src="static/js/app/delete.js"></script>
 
     <link rel="stylesheet" type="text/css" href="static/css/explorer.css">
 {{end}}

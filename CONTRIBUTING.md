@@ -13,12 +13,19 @@
 - [x] ~~File Explorer~~
 - [x] ~~Download File~~
 - [x] ~~Upload File~~
+- [X] ~~Delete file~~
 - [x] ~~Restart~~
 - [x] ~~Shutdown~~
 - [ ] Persistence (install at startup)
-- [ ] Lock screen
-- [ ] Open URL
+- [x] ~~Lock screen~~
+- [X] ~~Open URL~~
 - [ ] Kill process
+- [X] Add Postgres support
+- [X] Client connection using Websocket
+- [ ] Clipboard Monitor
+- [ ] Live stream from camera
+- [ ] Take photos (webcam)
+- [ ] Voice recording
 
 # Local Development
 ```bash
@@ -32,13 +39,34 @@ $ git clone https://github.com/tiagorlampert/CHAOS
 $ cd CHAOS/
 
 # Run
-$ PORT=8080 DATABASE_NAME=chaos go run cmd/chaos/main.go
+$ PORT=8080 SQLITE_DATABASE=chaos go run cmd/chaos/main.go
 ```
 
 # Build Docker Image:
 
 ```bash
-docker build -t tiagorlampert/chaos:v5.0.0 --build-arg APP_VERSION=v5.0.0 .
+docker build \
+  --build-arg APP_VERSION=v5.0.0 \
+  --tag tiagorlampert/chaos:v5.0.0 \
+  --tag tiagorlampert/chaos:latest -f Dockerfile .
+            
+docker run -it --rm -e PORT=8080 -e SQLITE_DATABASE=chaos -p 8080:8080 tiagorlampert/chaos:latest
 
-docker run -it --rm -e PORT=8080 -p 8080:8080 tiagorlampert/chaos:v5.0.0
+docker push tiagorlampert/chaos:latest
+docker push tiagorlampert/chaos:v5.0.0
+```
+
+# Deploy on heroku (manual deployment)
+```bash
+$ git clone https://github.com/tiagorlampert/CHAOS
+$ cd CHAOS/
+
+$ heroku container:login
+$ heroku create
+$ heroku container:push web
+$ heroku container:release web
+$ heroku open
+
+# Can be called from a url to test
+# https://dashboard.heroku.com/new?button-url=https://github.com/tiagorlampert/CHAOS&template=https://github.com/tiagorlampert/CHAOS/tree/{branch_with_deploy}
 ```

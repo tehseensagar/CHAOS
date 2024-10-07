@@ -4,16 +4,16 @@ function SelectFile() {
 }
 
 function UploadFile() {
+    let file = document.getElementById("file-input").files[0];
+    let formData = new FormData();
+    formData.append("file", file);
+
     Swal.fire({
-        title: 'Uploading...',
+        title: 'Uploading ' + file.name + '...',
         onBeforeOpen: () => {
             Swal.showLoading()
         }
     });
-
-    let file = document.getElementById("file-input").files[0];
-    let formData = new FormData();
-    formData.append("file", file);
 
     const url = '/upload';
     const initDetails = {
@@ -48,10 +48,11 @@ function SendToDevice(filename) {
     let urlParams = new URLSearchParams(window.location.search);
     let address = urlParams.get('address');
     let pathInput = document.getElementById('pathInput');
-    let command = "upload " + pathInput.value + "/" + filename;
+    let command = "upload";
+    let filepath = pathInput.value + "/" + filename;
 
     // Say to device get file from server
-    SendCommand(address, command)
+    SendCommand(address, command, filepath)
         .then(response => {
             if (!response.ok) {
                 return response.text().then(err => {
@@ -65,6 +66,8 @@ function SendToDevice(filename) {
             Swal.fire({
                 text: 'File uploaded successfully!',
                 icon: 'success'
+            }).then(() => {
+                Refresh();
             });
         }).catch(err => {
         console.log('Error: ', err);

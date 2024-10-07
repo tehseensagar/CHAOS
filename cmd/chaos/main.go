@@ -3,123 +3,100 @@ package main
 import (
 	"fmt"
 	"github.com/gin-gonic/gin"
-	"github.com/go-playground/validator/v10"
-	"github.com/jinzhu/gorm"
 	"github.com/sirupsen/logrus"
-	"github.com/tiagorlampert/CHAOS/database"
-	httpDelivery "github.com/tiagorlampert/CHAOS/delivery/http"
-	"github.com/tiagorlampert/CHAOS/middleware"
-	"github.com/tiagorlampert/CHAOS/repositories/sqlite"
-	"github.com/tiagorlampert/CHAOS/services"
-	"github.com/tiagorlampert/CHAOS/shared/environment"
-	"github.com/tiagorlampert/CHAOS/shared/utils/constant"
-	"github.com/tiagorlampert/CHAOS/shared/utils/system"
-	"github.com/tiagorlampert/CHAOS/shared/utils/template"
-	"github.com/tiagorlampert/CHAOS/shared/utils/ui"
-	"net/http"
-	"strings"
-	"time"
+	"github.com/tiagorlampert/CHAOS/infrastructure/database"
+	"github.com/tiagorlampert/CHAOS/internal"
+	"github.com/tiagorlampert/CHAOS/internal/environment"
+	"github.com/tiagorlampert/CHAOS/internal/middleware"
+	"github.com/tiagorlampert/CHAOS/internal/utils"
+	"github.com/tiagorlampert/CHAOS/internal/utils/system"
+	"github.com/tiagorlampert/CHAOS/internal/utils/ui"
+	httpDelivery "github.com/tiagorlampert/CHAOS/presentation/http"
+	authRepo "github.com/tiagorlampert/CHAOS/repositories/auth"
+	deviceRepo "github.com/tiagorlampert/CHAOS/repositories/device"
+	userRepo "github.com/tiagorlampert/CHAOS/repositories/user"
+	"github.com/tiagorlampert/CHAOS/services/auth"
+	"github.com/tiagorlampert/CHAOS/services/client"
+	"github.com/tiagorlampert/CHAOS/services/device"
+	"github.com/tiagorlampert/CHAOS/services/url"
+	"github.com/tiagorlampert/CHAOS/services/user"
+	"gorm.io/gorm"
 )
 
 const AppName = "CHAOS"
 
-var Version = "dev   "
+var Version = "dev"
 
 type App struct {
-	Configuration  *environment.Configuration
-	Logger         *logrus.Logger
-	TimeoutHandler http.Handler
-	ClientService  services.Client
-}
-
-func init() {
-	system.ClearScreen()
+	Logger        *logrus.Logger
+	Configuration *environment.Configuration
+	Router        *gin.Engine
 }
 
 func main() {
-	log := logrus.New()
-	log.Info(`Loading environment variables`)
+	_ = system.ClearScreen()
 
-	cfg := environment.LoadEnv()
-	validate := validator.New()
-	if err := validate.Struct(cfg); err != nil {
-		log.WithField(`cause`, err.Error()).Fatal(`error validating environment config variables`)
+	logger := logrus.New()
+	logger.Info(`Loading environment variables`)
+
+	if err := Setup(); err != nil {
+		logger.WithField(`cause`, err.Error()).Fatal(`error running setup`)
 	}
 
-	ui.ShowMenu(Version, cfg.Server.Port)
-
-	db, err := database.NewSQLiteClient(cfg.Database.Name)
+	configuration, err := environment.Load()
 	if err != nil {
-		log.WithField(`cause`, err).Fatal(`error connecting with database`)
+		logger.WithField(`cause`, err.Error()).Fatal(`error loading environment variables`)
 	}
 
-	if err := NewApp(log, cfg, db.Conn).Run(); err != nil {
-		log.WithField(`cause`, err).Fatal(fmt.Sprintf("failed to start %s Application", AppName))
+	db, err := database.NewProvider(configuration.Database)
+	if err != nil {
+		logger.WithField(`cause`, err).Fatal(`error connecting with database`)
+	}
+
+	if err := db.Migrate(); err != nil {
+		logger.WithField(`cause`, err.Error()).Fatal(`error migrating database`)
+	}
+
+	if err := NewApp(logger, configuration, db.Conn).Run(); err != nil {
+		logger.WithField(`cause`, err).Fatal(fmt.Sprintf("failed to start %s Application", AppName))
 	}
 }
 
-func NewApp(log *logrus.Logger, config *environment.Configuration, database *gorm.DB) *App {
-	//repositories
-	systemRepository := sqlite.NewSystemRepository(database)
-	userRepository := sqlite.NewUserRepository(database)
-	deviceRepository := sqlite.NewDeviceRepository(database)
+func NewApp(logger *logrus.Logger, configuration *environment.Configuration, dbClient *gorm.DB) *App {
+	authRepository := authRepo.NewRepository(dbClient)
+	userRepository := userRepo.NewRepository(dbClient)
+	deviceRepository := deviceRepo.NewRepository(dbClient)
 
-	//services
-	payloadService := services.NewPayload()
-	systemService := services.NewSystem(systemRepository, userRepository)
-	userService := services.NewUser(userRepository)
-	deviceService := services.NewDevice(deviceRepository)
-	clientService := services.NewClient(Version, systemRepository, payloadService, systemService)
+	authService := auth.NewAuthService(logger, configuration.SecretKey, authRepository)
+	userService := user.NewUserService(userRepository)
+	deviceService := device.NewDeviceService(deviceRepository)
+	clientService := client.NewClientService(Version, configuration, authRepository, authService)
+	urlService := url.NewUrlService(clientService)
 
-	//router
-	router := gin.Default()
-	router.Use(gin.Recovery())
-	router.Static("/static", "web/static")
-	router.HTMLRender = template.LoadTemplates("web")
-
-	params, err := systemService.Load()
-	if err != nil {
-		log.WithField(`cause`, err).Fatal(`error loading system params`)
-	}
-	jwtMiddleware, err := middleware.NewJWTMiddleware(params.SecretKey, userService)
-	if err != nil {
-		log.WithField(`cause`, err).Fatal(`error creating jwt middleware`)
+	if err := userService.CreateDefaultUser(); err != nil {
+		logger.WithField(`cause`, err.Error()).Fatal(`error setting up default user`)
 	}
 
-	httpDelivery.NewController(config, router, log, jwtMiddleware, clientService, systemService, payloadService, userService, deviceService)
+	router := httpDelivery.NewRouter()
+	jwtMiddleware := middleware.NewJwtMiddleware(authService, userService)
+
+	httpDelivery.NewController(configuration, router, logger, jwtMiddleware, clientService, authService, userService, deviceService, urlService)
 
 	return &App{
-		Configuration:  config,
-		Logger:         log,
-		TimeoutHandler: http.TimeoutHandler(router, time.Second*60, constant.TimeoutExceeded),
-		ClientService:  clientService,
+		Configuration: configuration,
+		Logger:        logger,
+		Router:        router,
 	}
 }
 
-func (a *App) Setup() error {
-	if err := system.CreateDirectory(constant.TempDirectory); err != nil {
-		return fmt.Errorf("error creating temp directory: %w", err)
-	}
-	if err := system.CreateDirectory(constant.DatabaseDirectory); err != nil {
-		return fmt.Errorf("error creating database directory: %w", err)
-	}
-
-	//first time building binary take some time
-	//handle issue running at startup
-	go a.ClientService.BuildClient(services.BuildClientBinaryInput{
-		ServerAddress: "localhost",
-		ServerPort:    "8080",
-		Filename:      "test",
-		RunHidden:     false,
-		OSTarget:      system.Windows,
-	})
-	return nil
+func Setup() error {
+	return utils.CreateDirs(internal.TempDirectory, internal.DatabaseDirectory)
 }
 
 func (a *App) Run() error {
-	if err := a.Setup(); err != nil {
-		return err
-	}
-	a.Logger.WithFields(logrus.Fields{`version`: strings.TrimSpace(Version), `port`: a.Configuration.Server.Port}).Info(`Starting `, AppName)
-	return http.ListenAndServe(fmt.Sprintf(":%s", a.Configuration.Server.Port), a.TimeoutHandler)
+	ui.ShowMenu(Version, a.Configuration.Server.Port)
+
+	a.Logger.WithFields(logrus.Fields{`version`: Version, `port`: a.Configuration.Server.Port}).Info(`Starting `, AppName)
+
+	return httpDelivery.NewServer(a.Router, a.Configuration)
 }

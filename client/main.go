@@ -1,23 +1,24 @@
 package main
 
 import (
+	_ "embed"
 	"github.com/tiagorlampert/CHAOS/client/app"
-	"github.com/tiagorlampert/CHAOS/client/app/shared/environment"
+	"github.com/tiagorlampert/CHAOS/client/app/environment"
 	"github.com/tiagorlampert/CHAOS/client/app/ui"
-	"github.com/tiagorlampert/CHAOS/client/app/util/network"
+	"github.com/tiagorlampert/CHAOS/client/app/utils"
 )
 
 var (
-	Version       = "dev"
-	ServerPort    = ""
-	ServerAddress = ""
-	Token         = ""
+	Version = "dev"
 )
 
-func main() {
-	ui.ShowMenu(Version)
-	appConfiguration := environment.LoadConfiguration(ServerAddress, ServerPort, Token)
+//go:embed config.json
+var configFile []byte
 
-	httpClient := network.NewHttpClient(10)
-	app.NewApp(httpClient, appConfiguration).Run()
+func main() {
+	config := utils.ReadConfigFile(configFile)
+
+	ui.ShowMenu(Version, config.ServerAddress, config.Port)
+
+	app.New(environment.Load(config.ServerAddress, config.Port, config.Token)).Run()
 }

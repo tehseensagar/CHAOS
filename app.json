@@ -1,0 +1,42 @@
+{
+  "name": "CHAOS (Remote Administration Tool)",
+  "description": "CHAOS is a free and open-source Remote Administration Tool that allow generate binaries to control remote operating systems.",
+  "repository": "https://github.com/tiagorlampert/CHAOS",
+  "logo": "https://raw.githubusercontent.com/tiagorlampert/CHAOS/master/public/logo.png",
+  "keywords": [
+    "go",
+    "docker"
+  ],
+  "stack": "container",
+  "env": {
+    "SQLITE_DATABASE": {
+      "description": "The SQLite database name.",
+      "value": "chaos",
+      "required": false
+    },
+    "POSTGRES_HOST": {
+      "description": "The PostgreSQL host.",
+      "required": false
+    },
+    "POSTGRES_PORT": {
+      "description": "The PostgreSQL port.",
+      "required": false
+    },
+    "POSTGRES_USER": {
+      "description": "The PostgreSQL username.",
+      "required": false
+    },
+    "POSTGRES_PASSWORD": {
+      "description": "The PostgreSQL password.",
+      "required": false
+    },
+    "POSTGRES_DATABASE": {
+      "description": "The PostgreSQL database name.",
+      "required": false
+    },
+    "POSTGRES_SSL_MODE": {
+      "description": "The PostgreSQL SSL mode.",
+      "required": false
+    }
+  }
+}
